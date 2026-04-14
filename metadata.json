@@ -1,0 +1,6 @@
+{
+  "name": "MoodVibe AI",
+  "description": "AI-powered YouTube Music playlist creator that generates personalized soundtracks based on your mood with real-time content moderation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /users/{uid}
+    // Fields: uid, displayName, email, photoURL, createdAt, lastLogin
+    //
+    // Collection: /users/{uid}/playlists/{playlistId}
+    // Fields: id, name, mood, description, artworkUrl, songs (array), ownerId, createdAt
+    //
+    // Collection: /users/{uid}/history/{historyId}
+    // Fields: songId, title, artist, playedAt
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.email.size() < 256;
+    }
+
+    function isValidPlaylist(data) {
+      return data.keys().hasAll(['name', 'ownerId', 'songs']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.ownerId == request.auth.uid &&
+             data.songs is list && data.songs.size() <= 100;
+    }
+
+    function isValidHistory(data) {
+      return data.keys().hasAll(['songId', 'playedAt']) &&
+             data.songId is string &&
+             data.playedAt is string;
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      
+      match /playlists/{playlistId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidPlaylist(request.resource.data);
+        allow update: if isOwner(userId) && isValidPlaylist(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+
+      match /history/{historyId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidHistory(request.resource.data);
+      }
+    }
+  }
+}
