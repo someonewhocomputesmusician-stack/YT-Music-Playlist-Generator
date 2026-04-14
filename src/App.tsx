@@ -19,7 +19,7 @@ import {
   X,
   Trash2
 } from 'lucide-react';
-import { auth, signInWithGoogle, logout, db } from './firebase';
+import { auth, signInWithGoogle, logout, db, storage } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { 
   collection, 
@@ -32,15 +32,20 @@ import {
   serverTimestamp,
   getDocFromServer
 } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { generatePlaylistByMood, moderateContent, SongRecommendation } from './services/gemini';
 import { cn } from './lib/utils';
 
 // Types
+interface Song extends SongRecommendation {
+  audioUrl?: string;
+}
+
 interface Playlist {
   id: string;
   name: string;
-  mood: string;
-  songs: SongRecommendation[];
+  mood?: string;
+  songs: Song[];
   createdAt: any;
 }
 
@@ -54,7 +59,16 @@ export default function App() {
   const [currentSongIndex, setCurrentSongIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showMoodModal, setShowMoodModal] = useState(false);
+  const [showManualModal, setShowManualModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Manual Playlist State
+  const [manualName, setManualName] = useState('');
+  const [manualSongs, setManualSongs] = useState<Song[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [newSong, setNewSong] = useState({ title: '', artist: '', artwork: '', duration: '3:30' });
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [artworkFile, setArtworkFile] = useState<File | null>(null);
 
   // Auth Listener
   useEffect(() => {
@@ -138,6 +152,67 @@ export default function App() {
       setError("Failed to generate playlist. Please try again.");
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleAddSongToManual = async () => {
+    if (!newSong.title || !newSong.artist || !user) return;
+    
+    setIsUploading(true);
+    try {
+      let audioUrl = '';
+      let artworkUrl = newSong.artwork || 'https://picsum.photos/seed/music/400/400';
+
+      if (audioFile) {
+        const audioRef = ref(storage, `users/${user.uid}/audio/${Date.now()}_${audioFile.name}`);
+        await uploadBytes(audioRef, audioFile);
+        audioUrl = await getDownloadURL(audioRef);
+      }
+
+      if (artworkFile) {
+        const artworkRef = ref(storage, `users/${user.uid}/artwork/${Date.now()}_${artworkFile.name}`);
+        await uploadBytes(artworkRef, artworkFile);
+        artworkUrl = await getDownloadURL(artworkRef);
+      }
+
+      const songToAdd: Song = {
+        ...newSong,
+        artwork: artworkUrl,
+        audioUrl,
+        genre: 'Custom'
+      };
+
+      setManualSongs([...manualSongs, songToAdd]);
+      setNewSong({ title: '', artist: '', artwork: '', duration: '3:30' });
+      setAudioFile(null);
+      setArtworkFile(null);
+    } catch (err) {
+      console.error(err);
+      setError("Upload failed. Please try again.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleSaveManualPlaylist = async () => {
+    if (!manualName || manualSongs.length === 0 || !user) return;
+
+    try {
+      const newPlaylist = {
+        name: manualName,
+        songs: manualSongs,
+        ownerId: user.uid,
+        createdAt: serverTimestamp()
+      };
+
+      await addDoc(collection(db, 'users', user.uid, 'playlists'), newPlaylist);
+      
+      setManualName('');
+      setManualSongs([]);
+      setShowManualModal(false);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to save playlist.");
     }
   };
 
@@ -288,6 +363,13 @@ export default function App() {
               <Plus className="w-4 h-4" />
               New AI Playlist
             </button>
+            <button 
+              onClick={() => setShowManualModal(true)}
+              className="w-full flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-white/60 hover:bg-white/5 hover:text-white transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Manual Playlist
+            </button>
           </div>
         </aside>
 
@@ -422,6 +504,15 @@ export default function App() {
                 </button>
                 <button className="text-white/60 hover:text-white"><SkipForward className="w-5 h-5 fill-current" /></button>
               </div>
+              {currentSong?.audioUrl && (
+                <audio 
+                  src={currentSong.audioUrl} 
+                  autoPlay={isPlaying} 
+                  onPlay={() => setIsPlaying(true)}
+                  onPause={() => setIsPlaying(false)}
+                  className="hidden"
+                />
+              )}
               <div className="w-full max-w-md flex items-center gap-3 text-[10px] text-white/40 font-bold">
                 <span>1:24</span>
                 <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
@@ -513,6 +604,129 @@ export default function App() {
                   ) : (
                     'Generate Playlist'
                   )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Manual Playlist Modal */}
+      <AnimatePresence>
+        {showManualModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowManualModal(false)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-[#1c1c1c] w-full max-w-2xl rounded-3xl p-8 relative z-10 border border-white/10 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar"
+            >
+              <button 
+                onClick={() => setShowManualModal(false)}
+                className="absolute right-6 top-6 text-white/40 hover:text-white"
+              >
+                <X className="w-6 h-6" />
+              </button>
+
+              <h3 className="text-2xl font-bold mb-6">Create Manual Playlist</h3>
+
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Playlist Name</label>
+                  <input 
+                    type="text" 
+                    value={manualName}
+                    onChange={(e) => setManualName(e.target.value)}
+                    placeholder="My Awesome Playlist"
+                    className="w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-red-500/50"
+                  />
+                </div>
+
+                <div className="border-t border-white/10 pt-6">
+                  <h4 className="text-sm font-bold mb-4">Add Songs</h4>
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <input 
+                      type="text" 
+                      placeholder="Song Title"
+                      value={newSong.title}
+                      onChange={(e) => setNewSong({...newSong, title: e.target.value})}
+                      className="bg-white/5 border border-white/10 rounded-xl p-3 text-sm focus:outline-none"
+                    />
+                    <input 
+                      type="text" 
+                      placeholder="Artist"
+                      value={newSong.artist}
+                      onChange={(e) => setNewSong({...newSong, artist: e.target.value})}
+                      className="bg-white/5 border border-white/10 rounded-xl p-3 text-sm focus:outline-none"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <label className="block text-[10px] text-white/40 uppercase mb-1">Audio File</label>
+                      <input 
+                        type="file" 
+                        accept="audio/*"
+                        onChange={(e) => setAudioFile(e.target.files?.[0] || null)}
+                        className="w-full text-xs text-white/40 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-red-500/10 file:text-red-500 hover:file:bg-red-500/20"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-white/40 uppercase mb-1">Artwork Image</label>
+                      <input 
+                        type="file" 
+                        accept="image/*"
+                        onChange={(e) => setArtworkFile(e.target.files?.[0] || null)}
+                        className="w-full text-xs text-white/40 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-red-500/10 file:text-red-500 hover:file:bg-red-500/20"
+                      />
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={handleAddSongToManual}
+                    disabled={isUploading || !newSong.title || !newSong.artist}
+                    className="w-full py-3 rounded-xl border border-white/10 text-sm font-bold hover:bg-white/5 transition-all flex items-center justify-center gap-2"
+                  >
+                    {isUploading ? 'Uploading...' : <><Plus className="w-4 h-4" /> Add Song to List</>}
+                  </button>
+                </div>
+
+                {manualSongs.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-bold text-white/40 uppercase tracking-widest">Songs in Playlist ({manualSongs.length})</h4>
+                    {manualSongs.map((s, i) => (
+                      <div key={i} className="flex items-center justify-between bg-white/5 p-3 rounded-xl">
+                        <div className="flex items-center gap-3">
+                          <img src={s.artwork} alt="" className="w-8 h-8 rounded object-cover" />
+                          <div>
+                            <div className="text-sm font-bold">{s.title}</div>
+                            <div className="text-xs text-white/40">{s.artist}</div>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => setManualSongs(manualSongs.filter((_, idx) => idx !== i))}
+                          className="text-white/40 hover:text-red-500"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <button 
+                  onClick={handleSaveManualPlaylist}
+                  disabled={!manualName || manualSongs.length === 0}
+                  className="w-full bg-red-600 text-white py-4 rounded-2xl font-bold hover:bg-red-700 disabled:opacity-50 transition-all mt-4"
+                >
+                  Save Playlist
                 </button>
               </div>
             </motion.div>
